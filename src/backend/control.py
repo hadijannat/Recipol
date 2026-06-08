@@ -340,26 +340,6 @@ def main(proc:list[dict[bml.Element, mtp.Pea, mtp.Procedure, list[mtp.Instance]]
 #     os.makedirs(data_dir, exist_ok=True)
 #     filename = os.path.join(data_dir, f"log_{time.strftime('%d-%m-%Y_%H-%M-%S')}.csv")
 # 
-    # preliminary check for material requirements
-    for p in proc:
-        if type(p) is list:
-            if type(p[0]) is dict:
-                # step in a parallel function
-                pass
-        else:
-            if type(p) is dict:
-                # simple step
-                for r in p['bml'].reqs:
-                    if "Material" in r.const:
-                        r:  bml.Requirement
-                        # check by operator
-                        material = r.const[r.const.rfind("=")+1:]
-                        ack = input(f"Step {p['bml'].name} only allows {material}. Please ensure that only {material} is used. Press 'y' to continue, press any other key to terminate.")
-                        if ack.lower() == "y":
-                            continue
-                        else:
-                            matFlag = False
-                            return
     # create list of headers
     headers:list[str] = ["Time"]
     for m in mtps:
@@ -750,13 +730,7 @@ def run_from_files(mtp_files=None, recipe_files=None, logger=None):
     global _log_cb
     _log_cb = logger
     procedure, mtps = build_execution_procedure(recipe_files=recipe_files, mtp_files=mtp_files)
-
-    # operator sequence check
-    print("\n" * 3)
-    ack = input("Please enter 'y' if you want to continue with the above procedure, press any other key to stop: ")
-
-    if ack.lower() == "y":
-        main(procedure, mtps)
+    main(procedure, mtps)
 ### main
 if __name__ == "__main__":
     run_from_files()

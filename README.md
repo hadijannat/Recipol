@@ -38,7 +38,7 @@ Recipol was developed at the Chair of Information and Automation Systems (IAT), 
 1. Ensure all dependencies are installed.
 2. Populate a master recipe and the corresponding MTP files in `Artefakte/` for process execution.
 3. Execute: `python control.py`
-4. Recipol prints the process sequence on the command line and pauses for operator confirmation before execution.
+4. Recipol presents the process sequence and starts execution.
 5. Monitor terminal output for step transitions of the process sequence; review `DataHistory.csv` for time-stamped steps and sensor readings.
 
 
