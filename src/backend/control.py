@@ -1,12 +1,36 @@
 import asyncio
 from asyncua import Client, ua
 import time
-import orchestration as oc
+from . import orchestration as oc
 from typing import Any
-import mtpparser as mtp
+from . import mtpparser as mtp
 import csv
-import b2mmlparser as bml
-import sequenz as seq
+from . import b2mmlparser as bml
+from . import sequenz as seq
+import os.path
+
+_log_cb = None
+
+
+def _log(msg: str):
+    print(msg)
+    if _log_cb is not None:
+        try:
+            _log_cb(msg)
+        except Exception:
+            pass
+
+
+def _wait_until(check_fn, timeout_s: float, sleep_s: float, timeout_msg: str):
+    start = time.monotonic()
+    while True:
+        if check_fn():
+            return True
+        if time.monotonic() - start >= timeout_s:
+            _log(timeout_msg)
+            raise TimeoutError(timeout_msg)
+        time.sleep(sleep_s)
+
 
 ### global variables
 #url = "opc.tcp://192.168.0.10:4840"
@@ -106,11 +130,16 @@ async def writeNodeValue(opcurl:str, nsIndex:str, nodeAddress:str, value:Any) ->
         dv = ua.DataValue(ua.Variant(value, variantType))
         await node.set_data_value(dv)
 
-async def readNodeValue(opcurl:str, nsIndex:str, nodeAddress:str) -> Any:
-    async with Client(url=opcurl) as client:
-        node = client.get_node(f"ns={nsIndex};s={nodeAddress}")
-        val = await node.read_value()
-        return val
+async def readNodeValue(opcurl: str, nsIndex: str, nodeAddress: str, context: str | None = None) -> Any:
+    node_id = f"ns={nsIndex};s={nodeAddress}"
+    try:
+        async with Client(url=opcurl) as client:
+            node = client.get_node(node_id)
+            return await node.read_value()
+    except Exception as e:
+        ctx = f" ({context})" if context else ""
+        print(f"[OPC UA] Failed to read NodeId '{node_id}' on '{opcurl}'{ctx}: {type(e).__name__}: {e}")
+        raise
     
 def changeParameterValue(opcurl:str, mode:str, nsIndex:str, service:mtp.Service, param:mtp.Instance, value:Any) -> None:
     if mode == "op":
@@ -242,9 +271,9 @@ def checkOperatorMode(opcurl:str, nsIndex:str, service:mtp.Service) -> bool:
     # return the value
     return asyncio.run(readNodeValue(opcurl=opcurl, nsIndex=nsIndex, nodeAddress=service.paramElem['StateOpAct']['ID']))
 
-def checkCurrentState(opcurl:str, nsIndex:str, service:mtp.Service) -> int:
+def checkCurrentState(opcurl: str, nsIndex: str, service: mtp.Service, context: str | None = None) -> int:
     # return the value
-    return asyncio.run(readNodeValue(opcurl=opcurl, nsIndex=nsIndex, nodeAddress=service.paramElem['StateCur']['ID']))
+    return asyncio.run(readNodeValue(opcurl=opcurl, nsIndex=nsIndex, nodeAddress=service.paramElem['StateCur']['ID'], context=context))
 
 def readSensorValue(opcurl:str, nsIndex:str, sensor:mtp.Instance) -> Any:
     # get the value of the sensor
@@ -271,21 +300,27 @@ def statusMonitoring(peas:list[mtp.Pea], url:str, idx:str) -> list[dict]:
             idx = pea.nsid = asyncio.run(getNamespaceId(url, pea.ns))
         for s in pea.servs:
             s: mtp.Service
-            statuses.append({"Name": f"{pea.name}_{s.name}", "ID": s.refid, "Value": getStateByEncoding(code=checkCurrentState(opcurl=url, nsIndex=idx, service=s))})
+            statuses.append({"Name": f"{pea.name}_{s.name}", "ID": s.refid, "Value": getStateByEncoding(code=checkCurrentState(opcurl=url, nsIndex=idx, service=s, context=f"PEA='{pea.name}', Service='{s.name}', Param='StateCur'"))})
 
         for sa in pea.sensacts:
             sa: mtp.Instance
             if sa.paramElem["V"]["ID"] is not None:
-                statuses.append({"Name": f"{pea.name}_{sa.name}", "ID": sa.id, "Value": asyncio.run(readNodeValue(opcurl=url, nsIndex=idx, nodeAddress=sa.paramElem["V"]["ID"]))})
+                nodeAddress = sa.paramElem["V"]["ID"]
+                statuses.append({"Name": f"{pea.name}_{sa.name}", "ID": sa.id, "Value": asyncio.run(readNodeValue(opcurl=url, nsIndex=idx, nodeAddress=nodeAddress, context=f"PEA='{pea.name}', SA='{sa.name}', Param='V'"))})
             elif sa.paramElem["VOut"]["ID"] is not None:
-                statuses.append({"Name": f"{pea.name}_{sa.name}", "ID": sa.id, "Value": asyncio.run(readNodeValue(opcurl=url, nsIndex=idx, nodeAddress=sa.paramElem["VOut"]["ID"]))})
+                nodeAddress = sa.paramElem["VOut"]["ID"]
+                statuses.append({"Name": f"{pea.name}_{sa.name}", "ID": sa.id, "Value": asyncio.run(readNodeValue(opcurl=url, nsIndex=idx, nodeAddress=nodeAddress, context=f"PEA='{pea.name}', SA='{sa.name}', Param='VOut'"))})
             elif sa.paramElem["Pos"]["ID"] is not None:
-                statuses.append({"Name": f"{pea.name}_{sa.name}", "ID": sa.id, "Value": asyncio.run(readNodeValue(opcurl=url, nsIndex=idx, nodeAddress=sa.paramElem["Pos"]["ID"]))})
+                nodeAddress = sa.paramElem["Pos"]["ID"]
+                statuses.append({"Name": f"{pea.name}_{sa.name}", "ID": sa.id, "Value": asyncio.run(readNodeValue(opcurl=url, nsIndex=idx, nodeAddress=nodeAddress, context=f"PEA='{pea.name}', SA='{sa.name}', Param='Pos'"))})
             elif sa.paramElem["Ctrl"]["ID"] is not None:
-                statuses.append({"Name": f"{pea.name}_{sa.name}", "ID": sa.id, "Value": asyncio.run(readNodeValue(opcurl=url, nsIndex=idx, nodeAddress=sa.paramElem["Ctrl"]["ID"]))})
+                nodeAddress = sa.paramElem["Ctrl"]["ID"]
+                statuses.append({"Name": f"{pea.name}_{sa.name}", "ID": sa.id, "Value": asyncio.run(readNodeValue(opcurl=url, nsIndex=idx, nodeAddress=nodeAddress, context=f"PEA='{pea.name}', SA='{sa.name}', Param='Ctrl'"))})
             elif sa.paramElem["FwdCtrl"]["ID"] is not None:
-                fwdval = asyncio.run(readNodeValue(opcurl=url, nsIndex=idx, nodeAddress=sa.paramElem["FwdCtrl"]["ID"]))
-                revval = asyncio.run(readNodeValue(opcurl=url, nsIndex=idx, nodeAddress=sa.paramElem["RevCtrl"]["ID"]))
+                fwd_nodeAddress = sa.paramElem["FwdCtrl"]["ID"]
+                rev_nodeAddress = sa.paramElem["RevCtrl"]["ID"]
+                fwdval = asyncio.run(readNodeValue(opcurl=url, nsIndex=idx, nodeAddress=fwd_nodeAddress, context=f"PEA='{pea.name}', SA='{sa.name}', Param='FwdCtrl'"))
+                revval = asyncio.run(readNodeValue(opcurl=url, nsIndex=idx, nodeAddress=rev_nodeAddress, context=f"PEA='{pea.name}', SA='{sa.name}', Param='RevCtrl'"))
                 if fwdval == True or fwdval == 1:
                     statuses.append({"Name": f"{pea.name}_{sa.name}", "ID": sa.id, "Value": "1"})
                 elif revval == True or revval == 1:
@@ -296,27 +331,15 @@ def statusMonitoring(peas:list[mtp.Pea], url:str, idx:str) -> list[dict]:
     return statuses
 
 def main(proc:list[dict[bml.Element, mtp.Pea, mtp.Procedure, list[mtp.Instance]]], mtps:list[mtp.Pea]):
+    # initial flags
     matFlag = True
-    # preliminary check for material requirements
-    for p in proc:
-        if type(p) is list:
-            if type(p[0]) is dict:
-                # step in a parallel function
-                pass
-        else:
-            if type(p) is dict:
-                # simple step
-                for r in p['bml'].reqs:
-                    if "Material" in r.const:
-                        r:  bml.Requirement
-                        # check by operator
-                        material = r.const[r.const.rfind("=")+1:]
-                        ack = input(f"Step {p['bml'].name} only allows {material}. Please ensure that only {material} is used. Press 'y' to continue, press any other key to terminate.")
-                        if ack.lower() == "y":
-                            continue
-                        else:
-                            matFlag = False
-                            return
+    firstStepFlag = True
+
+    # create filename with current timestamp
+#     data_dir = os.path.join(os.path.dirname(__file__), "Datahistory")
+#     os.makedirs(data_dir, exist_ok=True)
+#     filename = os.path.join(data_dir, f"log_{time.strftime('%d-%m-%Y_%H-%M-%S')}.csv")
+# 
     # create list of headers
     headers:list[str] = ["Time"]
     for m in mtps:
@@ -338,23 +361,40 @@ def main(proc:list[dict[bml.Element, mtp.Pea, mtp.Procedure, list[mtp.Instance]]
                     pass
             else:
                 # draw sequence diagram
-                seq.drawSequenceDiagram(p, proc)
+                draw_item = p[0] if isinstance(p, tuple) else p
+                seq.drawSequenceDiagram(draw_item, proc)
 
                 # execute step
                 if type(p) is dict:
                     # simple step
                     if p['inst'] is None:
+                        step_name = (p['bml'].getName() or p['bml'].getId()) if p.get('bml') else '(unknown step)'
+                        _log(f"[EXEC] Skipping step '{step_name}': no mapped MTP procedure (inst is None).")
                         # either initial or end step
                         continue
                     else:
                         # fetch service, procedure and parameters
                         global url
                         global ns
-                        if url != p['mtp'].url:
+                        if p.get('mtp') is None:
+                            step_name = (p['bml'].getName() or p['bml'].getId()) if p.get('bml') else '(unknown step)'
+                            _log(f"[EXEC] Step '{step_name}' has no MTP module mapping; cannot execute.")
+                            raise ConnectionError("OPC UA Connection Failed: no MTP mapping for step.")
+
+                        src_file = getattr(p['mtp'], "source_file", "")
+                        step_name = (p['bml'].getName() or p['bml'].getId()) if p.get('bml') else '(unknown step)'
+                        proc_id = p['inst'].id if p.get('inst') else ''
+                        _log(f"[EXEC] Running step '{step_name}' (procId='{proc_id}'), source='{src_file}'.")
+                        nsid = p["mtp"].nsid
+                        if url != p['mtp'].url or nsid is None:
                             url = p['mtp'].url
                             ns = p['mtp'].ns
                             if p["mtp"].nsid is None:
-                                p["mtp"].nsid = asyncio.run(getNamespaceId(opcurl=url, ns=ns))
+                                try:
+                                    p["mtp"].nsid = asyncio.run(getNamespaceId(opcurl=url, ns=ns))
+                                except Exception as e:
+                                    detail = f"source={src_file}, url={url}, ns={ns}" if src_file or url or ns else str(e)
+                                    raise ConnectionError(f"OPC UA Connection Failed: {detail}") from e
                             nsid = p["mtp"].nsid
                             #ns = asyncio.run(getNamespace(opcurl=url))
                         service:mtp.Service = p['mtp'].getService(p['inst'].serviceId)
@@ -364,9 +404,13 @@ def main(proc:list[dict[bml.Element, mtp.Pea, mtp.Procedure, list[mtp.Instance]]
                         # set service to automatic mode
                         setOperationMode(opcurl=url, mode="aut", nsIndex=nsid, service=service)
                         # check if mode has been set
-                        while(True):
-                            if checkAutomaticMode(opcurl=url, nsIndex=nsid, service=service):
-                                break
+                        _log(f"[EXEC] Waiting for automatic mode on service '{service.name}'...")
+                        _wait_until(
+                            lambda: checkAutomaticMode(opcurl=url, nsIndex=nsid, service=service),
+                            timeout_s=30,
+                            sleep_s=0.5,
+                            timeout_msg=f"[EXEC] Timeout waiting for automatic mode on service '{service.name}'."
+                        )
                         
                         # set procedure
                         setProcedure(opcurl=url, mode="aut", nsIndex=nsid, service=service, procId=procedure.procId)
@@ -396,28 +440,25 @@ def main(proc:list[dict[bml.Element, mtp.Pea, mtp.Procedure, list[mtp.Instance]]
                         time.sleep(0.5)
 
                         # status monitoring
-                        statuses = statusMonitoring(peas=mtps, url=url, idx=nsid)
-
-                        with open('DataHistory.csv', 'r', newline='') as csvfile:
-                            reader = csv.reader(csvfile)
-                            flag = len(list(reader))
-                        
-                        with open('DataHistory.csv', 'a', newline='') as csvfile:
-                            writer = csv.writer(csvfile)
-                            if flag == 0:
-                                writer.writerow(headers)
-                            rowToWrite = []
-                            for head in headers:
-                                for s in statuses:
-                                    if s["Name"] == head:
-                                        if head == "Time":
-                                            rowToWrite.append(time.asctime(s["Value"]))
-                                        else:
-                                            rowToWrite.append(s["Value"])
-                                        break
-                                else:
-                                    rowToWrite.append("NaN")
-                            writer.writerow(rowToWrite)
+#                         statuses = statusMonitoring(peas=mtps, url=url, idx=nsid)
+#                         
+#                         with open(filename, 'a', newline='') as csvfile:
+#                             writer = csv.writer(csvfile)
+#                             if firstStepFlag == True:
+#                                 writer.writerow(headers)
+#                                 firstStepFlag = False
+#                             rowToWrite = []
+#                             for head in headers:
+#                                 for s in statuses:
+#                                     if s["Name"] == head:
+#                                         if head == "Time":
+#                                             rowToWrite.append(time.asctime(s["Value"]))
+#                                         else:
+#                                             rowToWrite.append(s["Value"])
+#                                         break
+#                                 else:
+#                                     rowToWrite.append("NaN")
+#                             writer.writerow(rowToWrite)
                 else:
                     # simple transition
                     # fetch keyword, instance, operator and value
@@ -425,6 +466,7 @@ def main(proc:list[dict[bml.Element, mtp.Pea, mtp.Procedure, list[mtp.Instance]]
                         cond:str = p[0].cond
                     else:
                         cond: str = p.cond
+                    _log(f"[EXEC] Transition {cond}")
                     if cond != "True":
                         if "AND" in cond or "OR" in cond or "NOT" in cond:
                             # To do 
@@ -471,10 +513,13 @@ def main(proc:list[dict[bml.Element, mtp.Pea, mtp.Procedure, list[mtp.Instance]]
                         else:
                             # complete service
                             completeService(url, "aut", nsid, service)
-                        while True:
-                            state = checkCurrentState(opcurl=url, nsIndex=nsid, service=service)
-                            if state == 131072 or state == 4:
-                                break
+                        _log(f"[EXEC] Waiting for service '{service.name}' to complete/stop...")
+                        _wait_until(
+                            lambda: (checkCurrentState(opcurl=url, nsIndex=nsid, service=service) in (131072, 4)),
+                            timeout_s=60,
+                            sleep_s=0.5,
+                            timeout_msg=f"[EXEC] Timeout waiting for service '{service.name}' to complete/stop."
+                        )
                         # reset service
                         resetService(url, "aut", nsid, service)
                     elif kw == "Temp":
@@ -505,10 +550,13 @@ def main(proc:list[dict[bml.Element, mtp.Pea, mtp.Procedure, list[mtp.Instance]]
                         else:
                             # complete service
                             completeService(url, "aut", nsid, service)
-                        while True:
-                            state = checkCurrentState(opcurl=url, nsIndex=nsid, service=service)
-                            if state == 131072 or state == 4:
-                                break
+                        _log(f"[EXEC] Waiting for service '{service.name}' to complete/stop...")
+                        _wait_until(
+                            lambda: (checkCurrentState(opcurl=url, nsIndex=nsid, service=service) in (131072, 4)),
+                            timeout_s=60,
+                            sleep_s=0.5,
+                            timeout_msg=f"[EXEC] Timeout waiting for service '{service.name}' to complete/stop."
+                        )
                         # reset service
                         resetService(url, "aut", nsid, service)
                     elif kw == "Material":
@@ -516,38 +564,61 @@ def main(proc:list[dict[bml.Element, mtp.Pea, mtp.Procedure, list[mtp.Instance]]
                         pass
                     elif kw == "Step":
                         # fetch the step
-                        step = next(s for s in proc if type(s) is dict and s['bml'].name == inst)
+                        step = next((s for s in _iter_proc_items(proc) if isinstance(s, dict) and (s['bml'].getName() == inst or s['bml'].getId() == inst or s['bml'].name == inst)), None)
+                        if step is None:
+                            # no matching step found; abort transition handling
+                            return
                         service = step['mtp'].getService(step['inst'].serviceId)
                         
                         # check step state
                         if value == "Idle":
-                            while(True):
-                                if checkCurrentState(opcurl=url, nsIndex=nsid, service=service) == 16:
-                                    break
+                            _log(f"[EXEC] Waiting for step '{inst}' to become Idle...")
+                            _wait_until(
+                                lambda: checkCurrentState(opcurl=url, nsIndex=nsid, service=service) == 16,
+                                timeout_s=60,
+                                sleep_s=0.5,
+                                timeout_msg=f"[EXEC] Timeout waiting for step '{inst}' to become Idle."
+                            )
                         elif value == "Paused":
-                            while(True):
-                                if checkCurrentState(opcurl=url, nsIndex=nsid, service=service) == 32:
-                                    break
+                            _log(f"[EXEC] Waiting for step '{inst}' to become Paused...")
+                            _wait_until(
+                                lambda: checkCurrentState(opcurl=url, nsIndex=nsid, service=service) == 32,
+                                timeout_s=60,
+                                sleep_s=0.5,
+                                timeout_msg=f"[EXEC] Timeout waiting for step '{inst}' to become Paused."
+                            )
                         elif value == "Held":
-                            while(True):
-                                if checkCurrentState(opcurl=url, nsIndex=nsid, service=service) == 2048:
-                                    break
+                            _log(f"[EXEC] Waiting for step '{inst}' to become Held...")
+                            _wait_until(
+                                lambda: checkCurrentState(opcurl=url, nsIndex=nsid, service=service) == 2048,
+                                timeout_s=60,
+                                sleep_s=0.5,
+                                timeout_msg=f"[EXEC] Timeout waiting for step '{inst}' to become Held."
+                            )
                         elif value == "Completed":
                             while(True):
                                 if checkCurrentState(opcurl=url, nsIndex=nsid, service=service) == 131072:
                                     break
-                                elif checkCurrentState(opcurl=url, nsIndex=nsid, service=service) == 32:
-                                    # resume
-                                    resumeService(opcurl=url, mode="aut", nsIndex=nsid, service=service)
-                                elif checkCurrentState(opcurl=url, nsIndex=nsid, service=service) == 2048:
-                                    # unhold
-                                    unholdService(opcurl=url, mode="aut", nsIndex=nsid, service=service)
+                                elif checkCurrentState(opcurl=url, nsIndex=nsid, service=service) == 4:
+                                    # user check
+                                    inp = input(f"Step {step.name} has STOPPED. Reset? y/n")
+                                    if inp.lower() == "y":
+                                        resetService(opcurl=url, mode="aut", nsIndex=nsid, service=service)
+                                    return
+                                elif checkCurrentState(opcurl=url, nsIndex=nsid, service=service) == 512:
+                                    # user check
+                                    inp = input(f"Step {step.name} has ABORTED. Reset? y/n")
+                                    if inp.lower() == "y":
+                                        resetService(opcurl=url, mode="aut", nsIndex=nsid, service=service)
+                                    return
                             # reset state
                             resetService(opcurl=url, mode="aut", nsIndex=nsid, service=service)
 
                             # set all parameters to default
                             params = []
-                            for par in step['inst'].params:
+                            # for par in step['inst'].params:
+                            #     changeParameterValue(opcurl=url, mode="aut", nsIndex=nsid, service=service, param=par, value=int(par.default))
+                            for par in params:
                                 changeParameterValue(opcurl=url, mode="aut", nsIndex=nsid, service=service, param=par, value=int(par.default))
                         elif value == "Stopped":
                             while(True):
@@ -558,34 +629,108 @@ def main(proc:list[dict[bml.Element, mtp.Pea, mtp.Procedure, list[mtp.Instance]]
                                 if checkCurrentState(opcurl=url, nsIndex=nsid, service=service) == 512:
                                     break
     
+def _normalize_proc_id(proc_id: str) -> str:
+    if ":" in proc_id:
+        return proc_id.rsplit(":", 1)[-1]
+    return proc_id
+
+
+def _find_mtp_for_proc(mtps, proc_id: str):
+    for module in mtps:
+        if module.getProcedure(proc_id) is not None:
+            return module
+    return None
+
+
+def _find_mtp_for_condition(mtps, cond: str | None, fallback):
+    if not cond or cond == "True":
+        return fallback
+    parts = cond.split()
+    if len(parts) >= 2:
+        inst = parts[1]
+        for module in mtps:
+            if module.getInstanceByName(inst) is not None:
+                return module
+    return fallback
+
+
+def _map_params(mtp_proc, bml_elem):
+    if mtp_proc is None or bml_elem is None:
+        return []
+    params = []
+    # Prefer recipe element parameters (from MasterRecipe) to ensure values are applied.
+    bml_params = bml_elem.getParameter() if hasattr(bml_elem, "getParameter") else []
+    for p in bml_params:
+        if not p.id:
+            continue
+        pid = p.id.rsplit(":", 1)[-1] if ":" in p.id else p.id
+        inst = mtp_proc.getParameter(pid)
+        if inst is None:
+            continue
+        params.append((inst, p.value))
+    return params
+
+
+def _iter_proc_items(proc: list):
+    for p in proc:
+        if isinstance(p, list):
+            for sub in p:
+                yield sub
+        else:
+            yield p
+
+
+def build_execution_procedure(recipe_files=None, mtp_files=None):
+    mtps = mtp.getMtps(input_files=mtp_files) if mtp_files else mtp.getMtps()
+    proc = []
+    files = recipe_files or [None]
+    fallback_mtp = mtps[0] if mtps else None
+    last_step_mtp = fallback_mtp
+
+    for recipe_file in files:
+        ordered = bml.main(input_file=recipe_file, validate_schema=False)
+        for item in ordered:
+            if isinstance(item, list):
+                group = []
+                for elem in item:
+                    converted = _convert_element(elem, mtps, fallback_mtp, last_step_mtp)
+                    group.append(converted)
+                    if isinstance(converted, dict) and converted.get("mtp"):
+                        last_step_mtp = converted["mtp"]
+                proc.append(group)
+            else:
+                converted = _convert_element(item, mtps, fallback_mtp, last_step_mtp)
+                proc.append(converted)
+                if isinstance(converted, dict) and converted.get("mtp"):
+                    last_step_mtp = converted["mtp"]
+
+    return proc, mtps
+
+
+def _convert_element(elem, mtps, fallback_mtp, last_step_mtp):
+    if elem.getType() == "Step":
+        bml_proc = elem.acts[0] if elem.acts else None
+        proc_id = _normalize_proc_id(bml_proc.id) if bml_proc else _normalize_proc_id(elem.getId())
+        mtp_mod = _find_mtp_for_proc(mtps, proc_id)
+        mtp_proc = mtp_mod.getProcedure(proc_id) if mtp_mod else None
+        params = _map_params(mtp_proc, elem)
+        return {
+            "bml": elem,
+            "mtp": mtp_mod,
+            "inst": mtp_proc,
+            "params": params,
+        }
+    else:
+        cond = elem.cond
+        mtp_mod = _find_mtp_for_condition(mtps, cond, last_step_mtp or fallback_mtp)
+        return (elem, mtp_mod)
+
+
+def run_from_files(mtp_files=None, recipe_files=None, logger=None):
+    global _log_cb
+    _log_cb = logger
+    procedure, mtps = build_execution_procedure(recipe_files=recipe_files, mtp_files=mtp_files)
+    main(procedure, mtps)
 ### main
 if __name__ == "__main__":
-    # service = pea.getService(id="8c361264-6ceb-4825-9b55-3b404b33fd5f")
-    # proc = service.procs[2]
-    # param = proc.params[0]
-    # url = "opc.tcp://192.168.0.20:4840"
-    
-    #setOperationMode(opcurl=url, mode="aut", nsIndex=3, service=service)
-    # changeParameterValue(opcurl=url, mode="aut", nsIndex=7, service=service, param=param, value=5)
-    #setProcedure(opcurl=url, mode="op", nsIndex=3, service=service, procId=proc.procId)
-    # startService(opcurl=url, mode="op", nsIndex=3, service=service)
-
-    # setOperationMode(opcurl=url, mode="aut", nsIndex=3, service=service)
-    # resetService(opcurl=url, mode="aut", nsIndex=3, service=service)
-
-    # setOperationMode(opcurl=url, mode="aut", nsIndex=4, service=service)
-    # changeParameterValue(opcurl=url, mode="aut", nsIndex=4, service=service, param=param, value=5)
-    # setProcedure(opcurl=url, mode="aut", nsIndex=4, service=service, procId=2)
-    # startService(opcurl=url, mode="aut", nsIndex=4, service=service)
-    # resetService(opcurl=url, mode="aut", nsIndex=4, service=service)
-    
-    mtps:list[mtp.Pea] = mtp.getMtps()
-
-    procedure = oc.getProcedure()
-
-    # operator sequence check
-    print("\n" * 3)
-    ack = input("Please enter 'y' if you want to continue with the above procedure, press any other key to stop: ")
-
-    if ack.lower() == "y":
-        main(procedure, mtps)
+    run_from_files()

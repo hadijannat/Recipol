@@ -1,18 +1,20 @@
-### imports
-from __future__ import annotations
+# Parser of the B2MML file, which transforms the XML file into 
+# a list of Element objects that are ordered according to the 
+# recipe logic. The main function is main(), which takes an 
+# optional input file and an optional boolean for schema validation. 
+# It returns a list of Element objects in the order they should be 
+# executed according to the recipe.
 
+from __future__ import annotations
 from defusedxml.ElementTree import parse
 import xmlschema
-
+from pathlib import Path
 
 ### static variables
-TESTXML10 = r"Artefakte\Wabe10_Grundrezept.xml"
-TESTXML20 = r"Artefakte\Wabe20_Grundrezept.xml"
-TESTXML30 = r"Artefakte\Wabe30_Grundrezept.xml"
-TESTXMLALL = r"Artefakte\Wabe102030_Grundrezept.xml"
-TESTXMLFILL = r"Artefakte\Wabe10_Fuellen.xml"
+TESTXML = r"Artefakte\Wabe2010_GrundrezeptStirrDoseHeiz.xml"
 SCHEMA = r"Schemas\AllSchemas.xsd"
 NAMESPACE = "{http://www.mesa.org/xml/B2MML}"
+BASE_DIR = Path(__file__).resolve().parent
 
 ### classes
 class Requirement:
@@ -116,14 +118,14 @@ class Element:
             self.params = None # parameters only for steps
             self.cond = None # condition of the transition
 
-        self.etype = etype
+        self.etype = etype      # ElementType
         self.id = id
         self.name = None
-        self.retype = None
-        self.preds = [] # the element(s) that precedes this element
-        self.posts = [] # the element(s) that follow this element
+        self.retype = None      # RecipeElementType
+        self.preds = [] # the element(s) that precedes this element, 前驱节点
+        self.posts = [] # the element(s) that follow this element， 后继节点
 
-    def __str__(self):
+    def __str__(self):      # 核心作用是：定义对象被“打印”或“转换为字符串”时的外观。如果没有这个方法，当你 print(obj) 时，你只会看到类似 <__main__.MyClass object at 0x000001> 这种看不懂的内存地址。有了它，你可以看到对象内部具体的数据内容。
         if self.init:
             descr = f"Initial {self.etype} {self.name}:\n"
         else:
@@ -252,7 +254,7 @@ class Bml:
 
         descr += "\n"
 
-        for elem in self.elems:
+        for elem in self.elems:     # steps and transitions
             descr += f"{str(elem)}\n"
 
         return descr
@@ -326,13 +328,13 @@ class Bml:
 
 ### functions
 def parseMasterRecipe(bml:Bml, node):
-    for child in node:
+    for child in node:      # node为<b2mml:BatchInformation>, child 为子节点
         if child.tag == f"{NAMESPACE}EquipmentRequirement":
             # create requirement object
             req = Requirement()
 
             # fetch information about requirement
-            for gchild in child:
+            for gchild in child:        # 此处gchild为<b2mml:EquipmentRequirement>下的节点
                 if gchild.tag == f"{NAMESPACE}ID":
                     req.nameRequirement(gchild.text)
                 elif gchild.tag == f"{NAMESPACE}Constraint":
@@ -365,7 +367,7 @@ def parseMasterRecipe(bml:Bml, node):
                     toId = gchild.find(f"{NAMESPACE}ToID").findtext(f"{NAMESPACE}ToIDValue")
                     toType = gchild.find(f"{NAMESPACE}ToID").findtext(f"{NAMESPACE}ToType")
 
-                    fromElem = bml.getElement(fromId)
+                    fromElem = bml.getElement(fromId)       # 在bml的self.elems:list[Element]找是否存在此Element, .getElement返回值是Element对象,找不到返回None
                     toElem = bml.getElement(toId)
 
                     if fromElem is None:
@@ -402,7 +404,7 @@ def parseMasterRecipe(bml:Bml, node):
                     stepElem = bml.getElement(gchild.findtext(f"{NAMESPACE}ID"))
 
                     # starting from this point the element will be adressed by the recipe element id
-                    # replace the procedure logic id by the recipe element id
+                    # replace the procedure logic id by the recipe element id           # 用recipe element id, 如<b2mml:RecipeElementID>001:3009c91d-62a1-4993-a2b5-3792452ea986</b2mml:RecipeElementID> 来替代procedure Logic id, 如<b2mml:ID>S2</b2mml:ID>
                     if stepElem is not None:
                         stepElem.changeId(gchild.findtext(f"{NAMESPACE}RecipeElementID"))
                         stepElem.setName(gchild.findtext(f"{NAMESPACE}Description"))
@@ -423,9 +425,9 @@ def parseMasterRecipe(bml:Bml, node):
                 # set as initial element
                 thisElem.setInit()
             else:
-                for gchild in child:
+                for gchild in child:        # child为非init的<b2mml:RecipeElement>
                     if gchild.tag == f"{NAMESPACE}ActualEquipmentID":
-                        resId = gchild.text
+                        resId = gchild.text         # Resource ID，如HC20Instance
 
                         res = bml.getResource(resId)
 
@@ -457,6 +459,7 @@ def parseMasterRecipe(bml:Bml, node):
                         paramId = gchild.findtext(f"{NAMESPACE}ID")
                         param = bml.getParameter(paramId)
 
+                        #这个if里add的内容应该是错的，因为此处的<b2mml:Parameter>节点下不包含这些子节点，但这几行不会执行，因为所有parameter已经在bml的parameter列表里了
                         if param is None:
                             # parameter doesn't exist qet, create new one
                             param = Parameter(id=paramId)
@@ -470,10 +473,10 @@ def parseMasterRecipe(bml:Bml, node):
                         # add param to element
                         thisElem.addParameter(param)
 
-def parseResource(bml:Bml, node):
+def parseResource(bml:Bml, node):       # 这个函数的作用是填好Bml对象的self.res:list[Resource]，每个Resource包含ID（如HC10Instance）和所能提供的skills(即Procedures)
     if node.findtext(f"{NAMESPACE}EquipmentElementType") == "Other":
         # get the instance
-        resId = node.findtext(f"{NAMESPACE}ID")
+        resId = node.findtext(f"{NAMESPACE}ID")  # Resource代表的是设备，例如HC10Instance
         thisRes = bml.getResource(resId)
 
         if thisRes is None:
@@ -486,7 +489,7 @@ def parseResource(bml:Bml, node):
                 procId = child.findtext(f"{NAMESPACE}ID")
                 thisProc = Procedure(id=procId)
 
-                for gchild in child:
+                for gchild in child:  # child此处是<b2mml:EquipmentProceduralElement>
                     if gchild.tag == f"{NAMESPACE}Parameter":
                         # parse parameter
                         paramId = gchild.findtext(f"{NAMESPACE}ID")
@@ -507,109 +510,185 @@ def parseResource(bml:Bml, node):
                 # add procedure to resource
                 thisRes.addProcedure(thisProc)
 
-def sortElements(bml:Bml) -> list[Element]:
-    # get initial element
-    initElem = bml.getInitialElement()
-    # list of sorted elements
-    sortedElems = []
-    # helper list during sorting
-    helpSort:list[Element] = []
+# def sortElements(bml:Bml) -> list[Element]:
+#     # get initial element
+#     initElem = bml.getInitialElement()
+#     # list of sorted elements
+#     sortedElems = []
+#     # helper list during sorting
+#     helpSort:list[Element] = []
 
-    # add initial element to both lists
-    sortedElems.append([initElem])
-    helpSort.append(initElem)
+#     # add initial element to both lists
+#     sortedElems.append([initElem])
+#     helpSort.append(initElem)
 
-    # while there are still unseen elements sort
-    while len(helpSort) > 0:
-        curr = helpSort[0]
-        # differentiate between single objects and nested lists
-        if type(curr) is not list:
-            # initial is handled differently
-            if curr != initElem:
-                # check if all of curr's predecessors are already in the list
-                preds = curr.getPred()
-                isNext = True
-                for p in preds:
-                    if not any(p in sl for sl in sortedElems):
-                        isNext = False
-                        break
-                if isNext:
-                    # all predecessors are already in list, add following elements to sorted and help lists unless post is empty
-                    posts = curr.getPost()
-                    if len(posts) > 0:
-                        sortedElems.append(curr.posts)
-                        helpSort.extend(curr.posts)
+#     # while there are still unseen elements sort
+#     while len(helpSort) > 0:
+#         curr = helpSort[0]
+#         # differentiate between single objects and nested lists
+#         if type(curr) is not list:
+#             # initial is handled differently
+#             if curr != initElem:
+#                 # check if all of curr's predecessors are already in the list
+#                 preds = curr.getPred()
+#                 isNext = True
+#                 for p in preds:
+#                     if not any(p in sl for sl in sortedElems):
+#                         isNext = False
+#                         break
+#                 if isNext:
+#                     # all predecessors are already in list, add following elements to sorted and help lists unless post is empty
+#                     posts = curr.getPost()
+#                     if len(posts) > 0:
+#                         sortedElems.append(curr.posts)
+#                         helpSort.extend(curr.posts)
 
-                    # remove the current element from helpSort
-                    helpSort.remove(curr)
-                else:
-                    # check if there are still other elements in the list
-                    if len(helpSort) > 1:
-                        # switch current element with next
-                        helpSort[1], helpSort[0] = helpSort[0], helpSort[1]
-                    else:
-                        # error case with unreachable predecessor
-                        raise RuntimeError(f"Cannot find predecessing element of {curr.getId()}")
+#                     # remove the current element from helpSort
+#                     helpSort.remove(curr)
+#                 else:
+#                     # check if there are still other elements in the list
+#                     if len(helpSort) > 1:
+#                         # switch current element with next
+#                         helpSort[1], helpSort[0] = helpSort[0], helpSort[1]
+#                     else:
+#                         # error case with unreachable predecessor
+#                         raise RuntimeError(f"Cannot find predecessing element of {curr.getId()}")
 
-            else:
-                # add the initial element's following elements to sorted and help lists unless initial doesn't have following elements
-                posts = curr.getPost()
-                if len(posts) > 0:
-                    sortedElems.append(curr.getPost())
-                    helpSort.extend(curr.getPost())
+#             else:
+#                 # add the initial element's following elements to sorted and help lists unless initial doesn't have following elements
+#                 posts = curr.getPost()
+#                 if len(posts) > 0:
+#                     sortedElems.append(curr.getPost())
+#                     helpSort.extend(curr.getPost())
 
-                # remove the current element from helpSort
-                helpSort.remove(curr)
-        else: 
-            # do the same but for nested elements
-            for c in curr:
-                # check if all of c's predecessors are already in the list
-                preds = c.getPred()
-                isNext = True
-                for p in preds:
-                    if not any(p in sl for sl in sortedElems):
-                        isNext = False
-                        break
-                if isNext:
-                    # all predecessors are already in list, add following elements to sorted and help lists unless posts is empty
-                    posts = c.getPost()
-                    if len(posts) > 0:
-                        sortedElems.append(c.getPost())
-                        helpSort.extend(c.getPost())
+#                 # remove the current element from helpSort
+#                 helpSort.remove(curr)
+#         else: 
+#             # do the same but for nested elements
+#             for c in curr:
+#                 # check if all of c's predecessors are already in the list
+#                 preds = c.getPred()
+#                 isNext = True
+#                 for p in preds:
+#                     if not any(p in sl for sl in sortedElems):
+#                         isNext = False
+#                         break
+#                 if isNext:
+#                     # all predecessors are already in list, add following elements to sorted and help lists unless posts is empty
+#                     posts = c.getPost()
+#                     if len(posts) > 0:
+#                         sortedElems.append(c.getPost())
+#                         helpSort.extend(c.getPost())
 
-                    # remove the current element from helpSort
-                    helpSort.remove(c)
-                else:
-                    # check if there are still other elements in the list
-                    if len(helpSort) > 1:
-                        # switch current element with next
-                        helpSort[1], helpSort[0] = helpSort[0], helpSort[1]
-                    else:
-                        # error case with unreachable predecessor
-                        raise RuntimeError(f"Cannot find predecessing element of {c.getId()}")
+#                     # remove the current element from helpSort
+#                     helpSort.remove(c)
+#                 else:
+#                     # check if there are still other elements in the list
+#                     if len(helpSort) > 1:
+#                         # switch current element with next
+#                         helpSort[1], helpSort[0] = helpSort[0], helpSort[1]
+#                     else:
+#                         # error case with unreachable predecessor
+#                         raise RuntimeError(f"Cannot find predecessing element of {c.getId()}")
                     
-    # sortedList is a list of lists
-    # we want single elements to simply be part of the list but if there is parallel execution (= sublist with multiple elements) it shall stay sublist
+#     # sortedList is a list of lists
+#     # we want single elements to simply be part of the list but if there is parallel execution (= sublist with multiple elements) it shall stay sublist
+#     orderedList = []
+#     for e in sortedElems:
+#         if len(e) == 1:
+#             orderedList.extend(e)
+#         else:       # 若有并行的情况则变为[A, [B, C], D]
+#             orderedList.append(e)
+                    
+#     return orderedList
+
+def sortElements(bml: Bml) -> list[Element]:        # 这个函数的核心目标是：把一个“乱序的零件堆”组装成一个“有序的流水线”。在 XML 里，步骤（Steps）和连线（Links）是散乱存放的。
+    initElem = bml.getInitialElement()         # 找到起点
+    sortedElems = []
+    helpSort: list[Element] = [initElem]        # 待办清单
+    
+    # 核心优化点 1：使用 set 记录已处理节点的 ID
+    # 集合的查找复杂度是 O(1)，之前代码的查找复杂度是 O(N^2)
+    processed_ids = {initElem.id}           # 已完成记录
+    
+    # 为了保持原来的输出格式，我们依然需要这个临时列表
+    sortedElems.append([initElem])      
+
+    while helpSort:
+        curr = helpSort[0]
+        
+        # 统一处理：不管是单个对象还是列表，逻辑是一致的
+        # 原代码通过 type(curr) is list 分支，这里我们可以写得更简洁
+        targets = curr if isinstance(curr, list) else [curr]
+        
+        all_ready = True
+        ready_elements = []
+
+        for c in targets:
+            # 这里的 c != initElem 是为了兼容起始节点
+            if c == initElem:
+                continue
+                
+            preds = c.getPred()
+            # 核心优化点 2：极其快速的依赖检查
+            if all(p.id in processed_ids for p in preds):       # 它的所有前置任务（preds）都已经在 processed_ids 列表里了吗？
+                ready_elements.append(c)
+            else:
+                all_ready = False
+                break
+        
+        if all_ready:
+            # 当前节点（或并行列表里的所有节点）都已经准备好了
+            for c in targets:
+                posts = c.getPost()
+                if posts:
+                    # 按照原代码逻辑，将后续节点作为一个整体存入
+                    sortedElems.append(posts)
+                    helpSort.extend(posts)
+                
+                # 标记为已处理
+                processed_ids.add(c.id)
+            
+            helpSort.pop(0) # 移除已处理的节点
+        else:
+            # 依赖未满足，执行“交换”逻辑
+            if len(helpSort) > 1:
+                helpSort[0], helpSort[1] = helpSort[1], helpSort[0]
+            else:
+                # 剩下的最后一个节点也无法执行，说明存在逻辑环路或孤立节点
+                raise RuntimeError(f"Cannot find predecessing element of {curr.id if not isinstance(curr, list) else 'Parallel group'}")
+
+    # 最后阶段的格式化逻辑保持不变
     orderedList = []
     for e in sortedElems:
         if len(e) == 1:
-            orderedList.extend(e)
+            orderedList.extend(e) # 展开插入，[1, 2, 3, 4]
         else:
-            orderedList.append(e)
+            orderedList.append(e)       # 打包插入，不拆散队列，[1, 2, [3, 4]]
                     
     return orderedList
 
 ### start main
-def main() -> list[Element]:
-    # validate b2mml file
-    xmlschema.validate(TESTXMLALL, SCHEMA)
+def main(input_file: str | None = None, validate_schema: bool = False) -> list[Element]:
+    recipe_file = Path(input_file) if input_file else Path(TESTXML)
+    schema_file = Path(SCHEMA)
+
+    if not recipe_file.is_absolute() and not recipe_file.exists():
+        recipe_file = BASE_DIR / recipe_file
+    if not schema_file.is_absolute() and not schema_file.exists():
+        schema_file = BASE_DIR / schema_file
+
+    # validate b2mml file (optional, because schema files may be missing in deployment)
+    if validate_schema and schema_file.exists():
+        xmlschema.validate(str(recipe_file), str(schema_file))
 
     # parse b2mml file
-    tree = parse(TESTXMLALL)
+    tree = parse(str(recipe_file))
     root = tree.getroot()
 
     # create bml object
     bml = Bml()
+    
 
     # iterate over b2mml elements
     for child in root:
@@ -620,19 +699,23 @@ def main() -> list[Element]:
             # parse Resources
             parseResource(bml=bml, node=child)
 
-    # add procedures to steps
+    # add procedures to steps 将“流程步骤”（Step）与具体的“工艺操作”（Procedure）关联起来。
     for e in bml.elems:
-        if e.etype == "Step" and not (e.id == "Init" or e.id == "End"):
+        if e.etype == "Step" and not (e.id == "Init" or e.id == "End"):     # 只处理非init，end的step
             if ":" in e.id:
-                procId = e.id[e.id.find(":")+1:]
+                procId = e.id[e.id.find(":")+1:]        # 会截取冒号后面的部分，如：002:StirringProcess，得到 StirringProcess。
             else:
                 procId = e.id
 
             # get procedure
             e.addProcedure(bml.getProcedure(procId))
 
+    # for debug
+    # print(bml)
+    result_SortedList = sortElements(bml=bml)
+    
     # return sorted list
     return sortElements(bml=bml)
 
 if __name__ == "__main__":
-    main()
+    main()          # 返回的是一个list，里面是按照recipe规定的顺序的一组流程，例如, [A, [B, C], D], 每个元素都是一个Element对象
